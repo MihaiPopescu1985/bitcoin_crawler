@@ -4,134 +4,51 @@
 #include <stdbool.h>
 
 #include "blk_dat_parser.h"
+#include "export_debug.h"
 
 #define NEXT_TOKEN getc(dat_file)
-
-enum log
-{
-    NONE,
-    INFO,
-    DEBUG
-};
-
-enum log BLK_PARSER_LOG = NONE;
+#define uchar_p unsigned char *
 
 
 // Block header
 const uint8_t HEADER_MAX_SIZE = 80;
-uint8_t BLOCK_HEADER[80];
-uint8_t HEADER_INDEX = 0;
-unsigned char *BLOCK_HASH = NULL;
+static uint8_t BLOCK_HEADER[80];
+static uint8_t HEADER_INDEX = 0;
+static uchar_p BLOCK_HASH = NULL;
 
-uint8_t BLOCK_MAGIC_NUMBER[4] = {0xF9, 0xBE, 0xB4, 0xD9};
-uint32_t BLOCK_SIZE = 0;
-uint8_t BLOCK_VERSION[4] = {0, 0, 0, 0};
-uint8_t BLOCK_PREV_BLOCK[32] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-uint8_t BLOCK_MERKLE_ROOT[32] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-uint8_t BLOCK_TIME[4] = {0, 0, 0, 0};
-uint8_t BLOCK_BITS[4] = {0, 0, 0, 0};
-uint8_t BLOCK_NONCE[4] = {0, 0, 0, 0};
+static uint8_t BLOCK_MAGIC_NUMBER[4] = {0xF9, 0xBE, 0xB4, 0xD9};
 
-uint64_t TRANSACTION_COUNT;
+// Block transaction count
+static uint64_t TRANSACTION_COUNT;
 
 // Block transactions
-uint8_t *TRANSACTION = NULL;
-unsigned char *TX_HASH = NULL;
+static uint8_t *TRANSACTION = NULL;
+static uchar_p TX_HASH = NULL;
 
-size_t TX_SIZE = 0;
-size_t TX_CAP = 0;
+static size_t TX_SIZE = 0;
+static size_t TX_CAP = 0;
 
-uint64_t TX_IN_COUNT = 0;
+static uint64_t TX_IN_COUNT = 0;
 
-uint64_t SCRIPT_SIG_SIZE = 0;
-uint8_t *SCRIPT_SIG = NULL;
+static uint64_t SCRIPT_SIG_SIZE = 0;
+static uint8_t *SCRIPT_SIG = NULL;
 
-uint64_t TX_OUT_COUNT = 0;
+static uint64_t TX_OUT_COUNT = 0;
+static uint8_t TX_ID[32];
+static uint8_t V_OUT[4];
 
-uint64_t AMOUNT;
-uint64_t PUB_KEY_SIZE = 0;
-uint8_t *SCRIPT_PUB_KEY = NULL;
-uint32_t TX_LOCKTIME = 0;
-
-// DB
-sqlite3 *DB;
+static uint64_t PUB_KEY_SIZE = 0;
+static uint8_t *SCRIPT_PUB_KEY = NULL;
 
 
 // Helper functions
 void reset()
 {
-    if (SCRIPT_PUB_KEY != NULL) free(SCRIPT_PUB_KEY);
-    if (SCRIPT_SIG != NULL) free(SCRIPT_SIG);
-    if (TRANSACTION != NULL) free(TRANSACTION);
-    if (TX_HASH != NULL) free(TX_HASH);
     if (BLOCK_HASH != NULL) free(BLOCK_HASH);
-}
-
-uint8_t* get_current_position(FILE *dat_file)
-{
-    long int current_pos = ftell(dat_file);
-    unsigned long size = sizeof(long);
-
-    uint8_t *array = (uint8_t *) malloc(size * sizeof(uint8_t));
-    
-    for (size_t i = 0; i < size; i++)
-    {
-        array[size-i-1] = (uint8_t)(current_pos >> (8 * i));
-    }
-    return array;
-}
-
-void set_log_level(char *level, enum log *log)
-{
-    if (strcmp(level, "info") == 0) *log = INFO;
-    else if (strcmp(level, "debug") == 0) *log = DEBUG;
-    else *log = NONE;
-}
-
-void log_debug_bytes(uint8_t *bytes, size_t length, char message[])
-{
-    printf("[DEBUG] %s", message);
-    for (size_t i = 0; i < length; i++)
-    {
-        printf("%02X", bytes[i]);
-    }
-    printf("\n");
-}
-
-void log_debug_uint_32(uint32_t number, char message[])
-{
-    uint8_t *bytes = 
-            (uint8_t *) malloc(sizeof(number) * sizeof(uint8_t));
-    for (size_t i = 0; i < sizeof(number); ++i)
-    {
-        bytes[i] = (uint8_t)((number >> (8 * i)) & 0xFF);
-    }
-    log_debug_bytes(bytes, (size_t) sizeof(number), message);
-    free(bytes);
-}
-
-void log_debug_uint_64(uint64_t number, char message[])
-{
-    uint8_t *bytes = 
-            (uint8_t *) malloc(sizeof(number) * sizeof(uint8_t));
-    for (size_t i = 0; i < sizeof(number); ++i)
-    {
-        bytes[i] = (uint8_t)(number >> (8 * i));
-    }
-    log_debug_bytes(bytes, (size_t) sizeof(number), message);
-    free(bytes);
-}
-
-void log_info_bytes(uint8_t *bytes, size_t length, char message[])
-{
-    printf("[INFO] %s", message);
-    for (size_t i = 0; i < length; i++)
-    {
-        printf("%02X", bytes[i]);
-    }
-    printf("\n");
+    if (TRANSACTION != NULL) free(TRANSACTION);
+    if (SCRIPT_SIG != NULL) free(SCRIPT_SIG);
+    if (SCRIPT_PUB_KEY != NULL) free(SCRIPT_PUB_KEY);
+    if (TX_HASH != NULL) free(TX_HASH);
 }
 
 uint16_t to_big_endian_16(uint8_t first, uint8_t second)
@@ -170,17 +87,22 @@ uint64_t to_big_endian_64(uint8_t first, uint8_t second, uint8_t third, uint8_t 
 uint64_t get_compact_size(FILE *dat_file)
 {
     uint64_t size = NEXT_TOKEN;
+
     if (size < (uint64_t) 253) return size;
+
     if (size == (uint64_t) 253) {
         uint8_t bytes[2] = { NEXT_TOKEN, NEXT_TOKEN };
         return to_big_endian_16(bytes[0], bytes[1]);
     }
+
     if (size == (uint64_t) 254) {
         uint8_t bytes[4] = { NEXT_TOKEN, NEXT_TOKEN, NEXT_TOKEN, NEXT_TOKEN };
         return to_big_endian_32(bytes[0], bytes[1], bytes[2], bytes[3]);
     }
+
     uint8_t bytes[8] = { NEXT_TOKEN, NEXT_TOKEN, NEXT_TOKEN, NEXT_TOKEN, 
                         NEXT_TOKEN, NEXT_TOKEN, NEXT_TOKEN, NEXT_TOKEN };
+
     return to_big_endian_64(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4],
                             bytes[5], bytes[6], bytes[7]);
 }
@@ -196,7 +118,7 @@ int reverse_compact_size(uint64_t size)
     return amount;
 }
 
-void get_double_sha256(unsigned char *data, size_t data_len, unsigned char *out_hash) {
+void get_double_sha256(uchar_p data, size_t data_len, uchar_p out_hash) {
     unsigned char hash[32];
     SHA256_CTX sha256;
 
@@ -224,8 +146,8 @@ int resize_transaction(size_t amount)
 
     if (new_transaction == NULL)
     {
-        perror("Failed to resize TRANSACTION");
-        return 3001;
+        fprintf(stderr, "Failed to resize TRANSACTION");
+        return 1;
     }
 
     TRANSACTION = new_transaction;
@@ -244,163 +166,104 @@ void set_block_hash()
     get_double_sha256(BLOCK_HEADER, HEADER_INDEX, BLOCK_HASH);
 }
 
-// DB functions
-int db_insert_block()
-{
-    sqlite3_stmt *stmt;
-    const char *sql = "INSERT OR REPLACE INTO block (hash, time, transaction_count) VALUES (?, ?, ?);";
-
-    int result = sqlite3_prepare_v2(DB, sql, -1, &stmt, NULL);
-    if (result != SQLITE_OK)
-    {
-        fprintf(stderr, "Failed to prepare statement: %s\n", sqlite3_errmsg(DB));
-        return result;
-    }
-    
-    result = sqlite3_bind_blob(stmt, 1, BLOCK_HASH, 32, SQLITE_STATIC);
-    if (result != SQLITE_OK)
-    {
-        fprintf(stderr, "Failed to bind BLOCK_HASH: %s\n", sqlite3_errmsg(DB));
-        sqlite3_finalize(stmt);
-        return result;
-    }
-
-    // Convert BLOCK_TIME to an integer
-    uint32_t block_time = ((uint32_t)BLOCK_TIME[0]) |
-                            ((uint32_t)BLOCK_TIME[1] << 8) |
-                            ((uint32_t)BLOCK_TIME[2] << 16) |
-                            ((uint32_t)BLOCK_TIME[3] << 24);
-
-    // Bind the BLOCK_TIME to the second placeholder
-    result = sqlite3_bind_int(stmt, 2, block_time);
-    if (result != SQLITE_OK)
-    {
-        fprintf(stderr, "Failed to bind BLOCK_TIME: %s\n", sqlite3_errmsg(DB));
-        sqlite3_finalize(stmt);
-        return result;
-    }
-
-    result = sqlite3_bind_int64(stmt, 3, TRANSACTION_COUNT);
-    if (result != SQLITE_OK)
-    {
-        fprintf(stderr, "Failed to bind TRANSACTION_COUNT: %s\n", sqlite3_errmsg(DB));
-        sqlite3_finalize(stmt);
-        return result;
-    }
-
-    result = sqlite3_step(stmt);
-    if (result != SQLITE_DONE) fprintf(stderr, "Failed to insert data: %s\n", sqlite3_errmsg(DB));
-    
-    sqlite3_finalize(stmt);
-
-    return result == SQLITE_DONE ? SQLITE_OK : result;
-}
-
 // Header
 int parse_magic_bytes(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG != NONE) log_info_bytes(NULL, 0, "Parsing magic bytes.");
-
     for (int i = 0; i < 4; ++i)
     {
         uint8_t token = (uint8_t) NEXT_TOKEN;
         if (token != BLOCK_MAGIC_NUMBER[i])
         {
-            fprintf(stderr, "Expected %02X byte but found %02X as block magic number.\n", BLOCK_MAGIC_NUMBER[i], token);
+            fprintf(stderr,
+                    "Expected %02X byte but found %02X as block magic number.\n",
+                    BLOCK_MAGIC_NUMBER[i],
+                    token);
             fprintf(stderr, "At byte %ld\n", ftell(dat_file));
-            return 1001; // Error code indicating block magic number mismatch
+            return 1;
         }
     }
+    export_magic_number(BLOCK_MAGIC_NUMBER);
     return 0;
 }
 
 void parse_block_size(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing block size.");
-
     uint8_t bytes[4] = {(uint8_t) NEXT_TOKEN, (uint8_t) NEXT_TOKEN,
-                           (uint8_t) NEXT_TOKEN, (uint8_t) NEXT_TOKEN};
-
-    BLOCK_SIZE = to_big_endian_32(bytes[0], bytes[1], bytes[2], bytes[3]);
-    if (BLK_PARSER_LOG == DEBUG) log_debug_uint_32(BLOCK_SIZE, "Parsed block size: ");
+                        (uint8_t) NEXT_TOKEN, (uint8_t) NEXT_TOKEN};
+    export_block_size(bytes);
 }
 
 void parse_header_version(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing header version.");
+    uint8_t block_version[4] = {0, 0, 0, 0};
 
     for (size_t i = 0; i < 4; ++i)
     {
-        BLOCK_VERSION[i] = NEXT_TOKEN;
-        BLOCK_HEADER[HEADER_INDEX] = BLOCK_VERSION[i];
+        block_version[i] = NEXT_TOKEN;
+        BLOCK_HEADER[HEADER_INDEX] = block_version[i];
         HEADER_INDEX++;
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(BLOCK_VERSION, (size_t) 4, "Parsed block version: ");
+    export_header_version(block_version);
 }
 
 void parse_prev_hash(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing previous block hash.");
-
+    uint8_t prev_block[32];;
     for (size_t i = 0; i < 32; ++i)
     {
-        BLOCK_PREV_BLOCK[i] = NEXT_TOKEN;
-        BLOCK_HEADER[HEADER_INDEX] = BLOCK_PREV_BLOCK[i];
+        prev_block[i] = NEXT_TOKEN;
+        BLOCK_HEADER[HEADER_INDEX] = prev_block[i];
         HEADER_INDEX++;
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(BLOCK_PREV_BLOCK, (size_t) 32, "Parsed previous block hash: ");
+    export_prev_hash(prev_block);
 }
 
 void parse_merkle_root(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing the Merkle root.");
-
+    uint8_t merkle_root[32];
     for (size_t i = 0; i < 32; ++i)
     {
-        BLOCK_MERKLE_ROOT[i] = NEXT_TOKEN;
-        BLOCK_HEADER[HEADER_INDEX] = BLOCK_MERKLE_ROOT[i];
+        merkle_root[i] = NEXT_TOKEN;
+        BLOCK_HEADER[HEADER_INDEX] = merkle_root[i];
         HEADER_INDEX++;
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(BLOCK_MERKLE_ROOT, (size_t) 32, "Parsed the Merkle root: ");
+    export_merkle_root(merkle_root);
 }
 
 void parse_header_timestamp(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing the header timestamp.");
-
+    uint8_t block_time[4];
     for (size_t i = 0; i < 4; ++i)
     {
-        BLOCK_TIME[i] = NEXT_TOKEN;
-        BLOCK_HEADER[HEADER_INDEX] = BLOCK_TIME[i];
+        block_time[i] = NEXT_TOKEN;
+        BLOCK_HEADER[HEADER_INDEX] = block_time[i];
         HEADER_INDEX++;
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(BLOCK_TIME, (size_t) 4, "Parsed the header timestamp: ");
+    export_block_time(block_time);
 }
 
 void parse_nbytes(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing the header bytes.");
-
+    uint8_t block_bits[4];
     for (size_t i = 0; i < 4; ++i)
     {
-        BLOCK_BITS[i] = NEXT_TOKEN;
-        BLOCK_HEADER[HEADER_INDEX] = BLOCK_BITS[i];
+        block_bits[i] = NEXT_TOKEN;
+        BLOCK_HEADER[HEADER_INDEX] = block_bits[i];
         HEADER_INDEX++;
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(BLOCK_BITS, (size_t) 4, "Parsed the header bytes: ");
+    export_nbytes(block_bits);
 }
 
 void parse_nonce(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing the header nonce.");
-
+    uint8_t nonce[4];
     for (size_t i = 0; i < 4; ++i)
     {
-        BLOCK_NONCE[i] = NEXT_TOKEN;
-        BLOCK_HEADER[HEADER_INDEX] = BLOCK_NONCE[i];
+        nonce[i] = NEXT_TOKEN;
+        BLOCK_HEADER[HEADER_INDEX] = nonce[i];
         HEADER_INDEX++;
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(BLOCK_NONCE, (size_t) 4, "Parsed the header nonce: ");
+    export_nonce(nonce);
 }
 
 int parse_header(FILE *dat_file)
@@ -423,8 +286,7 @@ int parse_header(FILE *dat_file)
     parse_nonce(dat_file);
 
     set_block_hash();
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(BLOCK_HASH, 
-                        (size_t) 32, "Calculated block hash: ");
+    export_block_hash(BLOCK_HASH);
 
     // Verify the header parsing
     position += HEADER_MAX_SIZE;
@@ -432,8 +294,11 @@ int parse_header(FILE *dat_file)
 
     if (position != new_position)
     {
-        fprintf(stderr, "Expected header size %lu but %lu.\n", position, new_position);
-        return 1005;
+        fprintf(stderr,
+                "Expected header size %lu but %lu.\n",
+                position,
+                new_position);
+        return 1;
     }
     return 0;
 }
@@ -441,17 +306,12 @@ int parse_header(FILE *dat_file)
 // Transactions
 void parse_transaction_count(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing transaction count.");
-
     TRANSACTION_COUNT = get_compact_size(dat_file);
-    if (BLK_PARSER_LOG == DEBUG) log_debug_uint_64(TRANSACTION_COUNT, "Parsed raw tx count: ");
+    export_transaction_count(TRANSACTION_COUNT);
 }
 
 int parse_tx_version(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, 
-                        "Parsing tx version.");
-
     TX_CAP = (size_t) 4;
     TX_SIZE = (size_t) 0;
 
@@ -461,31 +321,30 @@ int parse_tx_version(FILE *dat_file)
         TRANSACTION = NULL;
     }
     TRANSACTION = (uint8_t *) malloc(TX_CAP * sizeof(uint8_t));
-    if (TRANSACTION == NULL) return 3002;
+    if (TRANSACTION == NULL) return 1;
 
     for (size_t i = 0; i < TX_CAP; ++i)
     {
         TRANSACTION[TX_SIZE] = NEXT_TOKEN;
         ++TX_SIZE;
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(TRANSACTION, (size_t) 4, "Parsed tx version: ");
+    export_tx_version(TRANSACTION);
+
     return 0;
 }
 
 int parse_input_count(FILE *dat_file, bool *is_witness)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, 
-                    "Parsing tx input count.");
-    
     TX_IN_COUNT = get_compact_size(dat_file);
     if (TX_IN_COUNT == (uint64_t) 0) // we found the marker
     {
         *is_witness = true;
-        NEXT_TOKEN; // skip the flag
+        export_flag((uint8_t) NEXT_TOKEN);
+
         TX_IN_COUNT = get_compact_size(dat_file);
     }
 
-    if (BLK_PARSER_LOG == DEBUG) log_debug_uint_64(TX_IN_COUNT, "Parsed raw tx input count: ");
+    export_tx_in_count(TX_IN_COUNT);
     size_t amount = (size_t) reverse_compact_size(TX_IN_COUNT);
 
     int result = resize_transaction(amount);
@@ -503,47 +362,37 @@ int parse_input_count(FILE *dat_file, bool *is_witness)
 
 int parse_input_txid(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, 
-                    "Parsing tx ID");
-    
-    uint8_t tx_id[32];
-    
     int result = resize_transaction((size_t) 32);
     if (result != 0) return result;
 
     for (size_t i = 0; i < 32; ++i)
     {
-        tx_id[i] = NEXT_TOKEN;
-        TRANSACTION[TX_SIZE++] = tx_id[i];
+        TX_ID[i] = NEXT_TOKEN;
+        TRANSACTION[TX_SIZE++] = TX_ID[i];
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(tx_id, (size_t) 32, "Parsed transaction id: ");
+    export_tx_id(TX_ID);
     return 0;
 }
 
 int parse_input_vout(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing tx input vout");
-    uint8_t v_out[4];
-    
     int result = resize_transaction((size_t) 4);
     if (result != 0) return result;
 
     for (int i = 0; i < 4; ++i)
     {
-        v_out[i] = NEXT_TOKEN;
-        TRANSACTION[TX_SIZE++] = v_out[i];
+        V_OUT[i] = NEXT_TOKEN;
+        TRANSACTION[TX_SIZE++] = V_OUT[i];
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(v_out, (size_t) 4, "Parsed tx vOut: ");
+    export_input_vout(V_OUT);
     return 0;
 }
 
 int parse_scriptsig_size(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing tx scriptsig size");
-    
     SCRIPT_SIG_SIZE = get_compact_size(dat_file);
 
-    if (BLK_PARSER_LOG == DEBUG) log_debug_uint_64(SCRIPT_SIG_SIZE, "Parsed scriptsig size: ");
+    export_script_sig_size(SCRIPT_SIG_SIZE);
     size_t amount = (size_t) reverse_compact_size(SCRIPT_SIG_SIZE);
 
     int result = resize_transaction((size_t) amount);
@@ -561,9 +410,6 @@ int parse_scriptsig_size(FILE *dat_file)
 
 int parse_scriptsig(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, 
-                    "Parsing tx scriptsig");
-    
     if (SCRIPT_SIG != NULL)
     {
         free(SCRIPT_SIG);
@@ -571,7 +417,7 @@ int parse_scriptsig(FILE *dat_file)
     }
 
     SCRIPT_SIG = (uint8_t *)malloc(SCRIPT_SIG_SIZE * sizeof(uint8_t));
-    if (SCRIPT_SIG == NULL) return 3003; // TODO: verify uniqueness of this number
+    if (SCRIPT_SIG == NULL) return 1;
 
     int result = resize_transaction((size_t) SCRIPT_SIG_SIZE);
     if (result != 0) return result;
@@ -581,15 +427,13 @@ int parse_scriptsig(FILE *dat_file)
         SCRIPT_SIG[i] = NEXT_TOKEN;
         TRANSACTION[TX_SIZE++] = SCRIPT_SIG[i];
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(SCRIPT_SIG, (size_t) SCRIPT_SIG_SIZE,"Parsed tx scriptsig: ");
+
+    export_script_sig(SCRIPT_SIG);
     return 0;
 }
 
 int parse_input_sequence(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, 
-                    "Parsing input sequence");
-    
     int result = resize_transaction((size_t) 4);
     if (result != 0) return result;
     
@@ -599,17 +443,15 @@ int parse_input_sequence(FILE *dat_file)
         in_seq[i] = NEXT_TOKEN;
         TRANSACTION[TX_SIZE++] = in_seq[i];
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(in_seq, (size_t) 4, "Parsed tx in sequence: ");
+
+    export_tx_in_sequence(in_seq);
     return 0;
 }
 
 int parse_out_count(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, 
-                    "Parsing tx out count");
-    
     TX_OUT_COUNT = get_compact_size(dat_file);
-    if (BLK_PARSER_LOG == DEBUG) log_debug_uint_64(TX_OUT_COUNT, "Parsed tx out count: ");
+    export_tx_out_count(TX_OUT_COUNT);
 
     size_t amount = (size_t) reverse_compact_size(TX_OUT_COUNT);
     int result = resize_transaction((size_t) amount);
@@ -627,9 +469,6 @@ int parse_out_count(FILE *dat_file)
 
 int parse_amount(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, 
-                    "Parsing tx amount");
-    
     int result = resize_transaction((size_t) 8);
     if (result != 0) return result;
 
@@ -640,19 +479,14 @@ int parse_amount(FILE *dat_file)
         TRANSACTION[TX_SIZE++] = raw_amount[i];
     }
 
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(raw_amount, (size_t) 8, "Parsed raw amount: ");
-    AMOUNT = to_big_endian_64(raw_amount[0], raw_amount[1], raw_amount[2],
-                            raw_amount[3], raw_amount[4], raw_amount[5],
-                            raw_amount[6], raw_amount[7]);
+    export_amount(raw_amount);
     return 0;
 }
 
 int parse_pubkey_size(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing tx input vout");
-    
     PUB_KEY_SIZE = get_compact_size(dat_file);
-    if (BLK_PARSER_LOG == DEBUG) log_debug_uint_64(PUB_KEY_SIZE, "Parsed public key size: ");
+    export_pub_key_size(PUB_KEY_SIZE);
 
     size_t amount = (size_t) reverse_compact_size(PUB_KEY_SIZE);
     int result = resize_transaction(amount);
@@ -670,15 +504,13 @@ int parse_pubkey_size(FILE *dat_file)
 
 int parse_script_pubkey(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing script public key");
-    
     if (SCRIPT_PUB_KEY != NULL)
     {
         free(SCRIPT_PUB_KEY);
         SCRIPT_PUB_KEY = NULL;
     }
     SCRIPT_PUB_KEY = (uint8_t *)malloc(PUB_KEY_SIZE * sizeof(uint8_t));
-    if (SCRIPT_PUB_KEY == NULL) return 3004; // TODO: verify this number
+    if (SCRIPT_PUB_KEY == NULL) return 1;
 
     int result = resize_transaction((size_t) PUB_KEY_SIZE);
     if (result != 0) return result;
@@ -688,37 +520,65 @@ int parse_script_pubkey(FILE *dat_file)
         SCRIPT_PUB_KEY[i] = NEXT_TOKEN;
         TRANSACTION[TX_SIZE++] = SCRIPT_PUB_KEY[i];
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(SCRIPT_PUB_KEY, (size_t) PUB_KEY_SIZE, "Parsed tx script public key: ");
+    export_script_pub_key(SCRIPT_PUB_KEY);
     return 0;
 }
 
 int parse_witness(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing tx witness");
-
-    // TODO: not doing anything at the moment; must be refactored
     for (size_t in = 0; in < TX_IN_COUNT; in++)
     {
         uint64_t stack_items = get_compact_size(dat_file);
-        if (BLK_PARSER_LOG == DEBUG) log_debug_uint_64(stack_items, "Parsed stack items: ");
+        export_stack_items_count(stack_items);
 
+        uint64_t w_size = 0;
+        uint64_t w_cap = reverse_compact_size(stack_items);
+
+        fseek(dat_file, -w_cap, SEEK_CUR); // go back
+        uint8_t *witness = (uint8_t *) malloc(w_cap * sizeof(uint8_t));
+
+        for (uint64_t i = 0; i < w_cap; ++i)
+        {
+            witness[w_size++] = NEXT_TOKEN;
+        }
+        
         for (size_t item = 0; item < stack_items; item++)
         {
             uint64_t size = get_compact_size(dat_file);
-            if (BLK_PARSER_LOG == DEBUG) log_debug_uint_64(size, "Parsed stack items size: ");
+            size_t amount = (size_t) reverse_compact_size(size);
+
+            w_cap += size;
+            w_cap += (uint64_t) amount;
+
+            uint8_t *new_array = (uint8_t *) realloc(witness, w_cap * (size_t) sizeof(uint8_t));
+            witness = new_array;
+
+            fseek(dat_file, -amount, SEEK_CUR);
+            while (amount > (size_t) 0)
+            {
+                witness[w_size++] = NEXT_TOKEN;
+                --amount;
+            }
+
+            export_stack_item_size(size);
             uint8_t to_stack[size];
 
-            for (size_t i = 0; i < size; ++i) to_stack[i] = NEXT_TOKEN;
-            if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(to_stack, (size_t) size, "Parsed item: ");
+            for (size_t i = 0; i < size; ++i)
+            {
+                to_stack[i] = NEXT_TOKEN;
+                witness[w_size++] = to_stack[i];
+            }
+
+            export_to_stack(to_stack);
         }
+        export_witness(witness, w_cap);
+        free(witness);
     }
     return 0;
 }
 
 int parse_lock_time(FILE *dat_file)
 {
-    if (BLK_PARSER_LOG == INFO) log_info_bytes(NULL, 0, "Parsing tx lock time");
-
     int result = resize_transaction((size_t) 4);
     if (result != 0) return result;
 
@@ -730,7 +590,7 @@ int parse_lock_time(FILE *dat_file)
         TRANSACTION[TX_SIZE] = lock_time[i];
         TX_SIZE++;
     }
-    if (BLK_PARSER_LOG == DEBUG) log_debug_bytes(lock_time, (size_t) 4, "Parsed tx lock time: ");
+    export_lock_time(lock_time);
     return 0;
 }
 
@@ -738,7 +598,6 @@ int parse_transactions(FILE *dat_file)
 {
     for (uint64_t tx = 0; tx < TRANSACTION_COUNT; ++tx)
     {
-        if (BLK_PARSER_LOG == INFO || BLK_PARSER_LOG == DEBUG) printf("Parsing transaction: %ld\n", tx);
         int result = parse_tx_version(dat_file);
         if (result != 0) return result;
 
@@ -794,19 +653,16 @@ int parse_transactions(FILE *dat_file)
             TX_HASH = NULL;
         }
         TX_HASH = malloc(SHA256_DIGEST_LENGTH * sizeof(unsigned char));
-        get_double_sha256((unsigned char *) TRANSACTION, TX_SIZE, TX_HASH);
+        get_double_sha256((uchar_p) TRANSACTION, TX_SIZE, TX_HASH);
 
-        if (BLK_PARSER_LOG != NONE) log_debug_bytes(TX_HASH, (size_t) 32, "Calculated tx hash: ");
+        export_tx_hash(TX_HASH);
     }
     return 0;
 }
 
-int parse_dat_file(FILE *dat_file, sqlite3 *database, char *log_level)
+int parse_dat_file(FILE *dat_file)
 {
     int error_code = 0;
-    DB = database;
-    set_log_level(log_level, &BLK_PARSER_LOG);
-
     while (true)
     {
         int next_byte = fgetc(dat_file);
@@ -814,23 +670,12 @@ int parse_dat_file(FILE *dat_file, sqlite3 *database, char *log_level)
         else break;
 
         error_code = parse_header(dat_file);
-        if (error_code != 0)
-        {
-            fprintf(stderr, "Parsing header returned: %d\n", error_code);
-            fclose(dat_file);
-            return error_code;
-        }
+        if (error_code != 0) return error_code;
 
         parse_transaction_count(dat_file);
-        db_insert_block();
 
         error_code = parse_transactions(dat_file);
-        if (error_code != 0)
-        {
-            fprintf(stderr, "Parsing transactions returned: %d\n", error_code);
-            fclose(dat_file);
-            return error_code;
-        }
+        if (error_code != 0) return error_code;
     }
     reset();
 
